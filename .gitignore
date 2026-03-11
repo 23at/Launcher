@@ -1,0 +1,8 @@
+# Java
+bin/
+obj/
+*.class
+
+# OS files
+.DS_Store
+Thumbs.db
