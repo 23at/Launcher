@@ -6,6 +6,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Web;
 
 namespace VRTrainingLauncher
 {
@@ -26,18 +27,54 @@ namespace VRTrainingLauncher
         {
             InitializeComponent();
 
-            // STEP 1: Accept JWT and Module ID from frontend
             string[] args = Environment.GetCommandLineArgs();
-            if (args.Length > 1) jwtToken = args[1];
-            if (args.Length > 2) moduleId = args[2];
-
-            if (string.IsNullOrEmpty(jwtToken) || string.IsNullOrEmpty(moduleId))
+            if (args.Length>1)
             {
-                MessageBox.Show("JWT token or Module ID missing. Launch from the frontend.");
+                string input=args[1];
+                if (input.StartsWith("vrlauncher://"))
+                {
+                    try
+                    {
+                        var uri = new Uri(input);
+                        var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+
+                        moduleId = query.Get("module") ?? "";
+                        //hardcode it rn for testing
+                        jwtToken="";
+                    }
+                    catch
+                    {
+                         MessageBox.Show("Invalid launch URL.");
+                        Application.Current.Shutdown();
+                        return;
+                    }
+                }
+                else
+                {
+                    //manual CLI testing
+                    jwtToken= args[1];
+                    if (args.Length > 2)
+                    {
+                        moduleId=args[2];
+                    }
+                }
+            }
+
+            //final validation
+            if (string.IsNullOrEmpty(moduleId))
+            {
+                MessageBox.Show("Module ID missing.");
                 Application.Current.Shutdown();
                 return;
             }
-
+            if (string.IsNullOrEmpty(jwtToken))
+            {
+                MessageBox.Show("JWT missing.");
+                Application.Current.Shutdown();
+                return;
+            }
+            
+            
             // STEP 2: Check if module is installed
             CheckInstallation();
         }
