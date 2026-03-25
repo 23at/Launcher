@@ -40,6 +40,9 @@ namespace VRTrainingLauncher
 
                         moduleId = query.Get("module") ?? "";
                         //hardcode it rn for testing
+                        //sessionToken = query.Get("session");
+                        //scenarioId = query.Get("scenario");
+                        //jwtToken = query.Get("token") ?? "";
                         jwtToken="";
                     }
                     catch
