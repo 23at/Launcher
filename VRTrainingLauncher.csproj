@@ -7,5 +7,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
   </PropertyGroup>
-
+<Target Name="PostBuild" AfterTargets="Build">
+  <Copy 
+    SourceFiles="$(TargetPath)" 
+    DestinationFolder="C:\VRLauncher\" 
+    OverwriteReadOnlyFiles="true" />
+</Target>
 </Project>
