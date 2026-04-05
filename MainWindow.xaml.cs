@@ -19,13 +19,13 @@ namespace VRTrainingLauncher
         private string extactDir = @"C:\VRTraining\";
         private string jwtToken = "";
         private string moduleId = "";
+        private static readonly HttpClient _httpClient = new HttpClient(); // backend (JWT)
+        private static readonly HttpClient _cdnClient = new HttpClient(); 
         private string? sessionToken = null;
         private string? scenarioId = null;
-        private string cdnUrl = "";
         private string moduleVersion = "";
         private string? moduleChecksum = null;
 
-        private static readonly HttpClient _httpClient = new HttpClient();
 
         public MainWindow()
         {
@@ -133,9 +133,8 @@ namespace VRTrainingLauncher
             if (module == null)
                 throw new Exception("Module not found.");
 
-            cdnUrl         = module.cdn_url;
             moduleVersion  = module.version;
-            moduleChecksum = module.cdn_checksum;   // may be null — that's fine
+            moduleChecksum = module.cdn_checksum;  
         }
 
         private async Task LaunchModuleSession()
@@ -170,12 +169,14 @@ namespace VRTrainingLauncher
 
         // ─── Download & Extract ───────────────────────────────────────────────
 
-        private async Task DownloadModule(string url, string version, string? expectedChecksum)
+       private async Task DownloadModule(string url, string version, string? expectedChecksum)
         {
             InstallButton.IsEnabled = false;
             ProgressBar.Value = 0;
 
-            // Download to a temp ZIP file outside the install dir
+            // Clean URL (safety)
+            url = url.Replace("\n", "").Replace("\r", "").Trim();
+
             string tempZip = Path.Combine(
                 Path.GetTempPath(),
                 $"vrmodule_{moduleId}_{version}.zip"
@@ -185,39 +186,39 @@ namespace VRTrainingLauncher
             {
                 Directory.CreateDirectory(installDir);
 
-                // 1. Stream-download the ZIP
                 StatusText.Text = "Downloading...";
-
-                using (HttpResponseMessage response = await _httpClient.GetAsync(
-                    url,
-                    HttpCompletionOption.ResponseHeadersRead))
                 {
-                    response.EnsureSuccessStatusCode();
+                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
 
-                    long? totalBytes = response.Content.Headers.ContentLength;
+                    using var response = await _cdnClient.SendAsync(
+                        request,
+                        HttpCompletionOption.ResponseHeadersRead
+                    );
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        string errorContent = await response.Content.ReadAsStringAsync();
+                        throw new Exception($"Download failed: {response.StatusCode}\n{errorContent}");
+                    }
 
                     using Stream downloadStream = await response.Content.ReadAsStreamAsync();
-                    using FileStream fileStream  = new FileStream(
+                    using FileStream fileStream = new FileStream(
                         tempZip,
                         FileMode.Create,
                         FileAccess.Write,
                         FileShare.None);
 
-                    byte[] buffer   = new byte[81920];
-                    long bytesRead  = 0;
-                    int  read;
+                    byte[] buffer = new byte[81920];
+                    int read;
 
                     while ((read = await downloadStream.ReadAsync(buffer)) > 0)
                     {
                         await fileStream.WriteAsync(buffer.AsMemory(0, read));
-                        bytesRead += read;
-
-                        if (totalBytes.HasValue)
-                            ProgressBar.Value = (double)bytesRead / totalBytes.Value * 100;
                     }
                 }
 
-                // 2. Verify SHA-256 checksum  
+                StatusText.Text = "Verifying...";
+                //  Checksum
                 if (!string.IsNullOrEmpty(expectedChecksum))
                 {
                     StatusText.Text = "Verifying...";
@@ -226,76 +227,54 @@ namespace VRTrainingLauncher
 
                     if (!actualChecksum.Equals(expectedChecksum, StringComparison.OrdinalIgnoreCase))
                     {
-                        StatusText.Text = "Checksum mismatch!";
-                        MessageBox.Show(
-                            $"Checksum verification failed.\n" +
-                            $"Expected: {expectedChecksum}\n" +
-                            $"Got:      {actualChecksum}",
-                            "Download Error",
-                            MessageBoxButton.OK,
-                            MessageBoxImage.Error
-                        );
-                        return;
+                        throw new Exception("Checksum mismatch!");
                     }
                 }
 
-                // 3. Wipe old install dir and extract the ZIP fresh
+                // Extract
                 StatusText.Text = "Extracting...";
 
                 if (Directory.Exists(installDir))
-                    Directory.Delete(installDir, recursive: true);
+                    Directory.Delete(installDir, true);
 
-                Directory.CreateDirectory(installDir);
+                Directory.CreateDirectory(extactDir);
 
-                ZipFile.ExtractToDirectory(tempZip, extactDir);
-                var allFiles = Directory.GetFiles(extactDir, "*.exe", SearchOption.AllDirectories);
+                ZipFile.ExtractToDirectory(tempZip, extactDir, true);
+
+                // Debug EXE detection
+                var allFiles = Directory.GetFiles(installDir, "*.exe", SearchOption.AllDirectories);
                 MessageBox.Show("Found exes:\n" + string.Join("\n", allFiles));
-                // 4. Confirm VRApp.exe is present after extraction
+
                 if (!File.Exists(installExe))
                 {
-                    StatusText.Text = "Install failed.";
-                    MessageBox.Show(
-                        $"Extraction succeeded but '{installExe}' was not found.\n" +
-                        "Make sure the ZIP contains .exe at its root level.",
-                        "Install Error",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Error
+                    throw new Exception(
+                        $"EXE not found at expected path:\n{installExe}\n\nCheck ZIP structure."
                     );
-                    return;
                 }
 
-                // 5. Write version stamp so we can skip re-downloads
                 File.WriteAllText(Path.Combine(installDir, "version.txt"), version);
 
-                StatusText.Text        = "Installed!";
+                StatusText.Text = "Installed!";
                 LaunchButton.IsEnabled = true;
-            }
-            catch (InvalidDataException)
-            {
-                StatusText.Text = "Download Failed — invalid ZIP.";
-                MessageBox.Show(
-                    "The downloaded file is not a valid ZIP archive.\n" +
-                    "Check that the CDN URL returns a ZIP file.",
-                    "Install Error",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Error
-                );
             }
             catch (Exception ex)
             {
                 StatusText.Text = "Download Failed.";
-                MessageBox.Show($"Download error: {ex.Message}");
+                MessageBox.Show(
+                    $"Error:\n{ex.Message}\n\n{ex.StackTrace}",
+                    "Error",
+                    MessageBoxButton.OK,
+                    MessageBoxImage.Error
+                );
             }
             finally
             {
-                // Always clean up the temp file
                 if (File.Exists(tempZip))
                     File.Delete(tempZip);
 
                 InstallButton.IsEnabled = true;
             }
         }
-
         // ─── Helpers ──────────────────────────────────────────────────────────
 
         private static string ComputeSha256(string filePath)
@@ -307,23 +286,26 @@ namespace VRTrainingLauncher
         }
 
         // ─── Button Handlers ──────────────────────────────────────────────────
-
         private async void InstallButton_Click(object sender, RoutedEventArgs e)
         {
             try
             {
-                await GetModuleInfo();
+                var signedData = await GetSignedDownloadUrl();
 
                 string localVersion = GetLocalModuleVersion();
 
-                if (File.Exists(installExe) && localVersion == moduleVersion)
+                if (File.Exists(installExe) && localVersion == signedData.version)
                 {
                     StatusText.Text        = "Already up to date!";
                     LaunchButton.IsEnabled = true;
                     return;
                 }
 
-                await DownloadModule(cdnUrl, moduleVersion, moduleChecksum);
+                await DownloadModule(
+                    signedData.signed_url,
+                    signedData.version,
+                    signedData.checksum
+                );
             }
             catch (Exception ex)
             {
@@ -368,6 +350,31 @@ namespace VRTrainingLauncher
             }
         }
 
+        private async Task<SignedUrlResponse> GetSignedDownloadUrl()
+        {
+            _httpClient.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", jwtToken);
+
+            HttpResponseMessage response =
+                await _httpClient.GetAsync(
+                    $"http://localhost:8000/modules/{moduleId}/signed-url"
+                );
+
+            response.EnsureSuccessStatusCode();
+
+            string json = await response.Content.ReadAsStringAsync();
+
+            var result = JsonSerializer.Deserialize<SignedUrlResponse>(
+                json,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
+            );
+
+            if (result == null || string.IsNullOrWhiteSpace(result.signed_url))
+                throw new Exception("Invalid signed URL response.");
+
+            return result;
+        }
+
         // ─── Models ───────────────────────────────────────────────────────────
 
         public class TrainingModule
@@ -384,6 +391,14 @@ namespace VRTrainingLauncher
             public string  module_id      { get; set; } = "";
             public string? scenario_id    { get; set; }
             public string? session_token  { get; set; }
+        }
+
+
+       public class SignedUrlResponse
+        {
+            public string signed_url { get; set; } = "";
+            public string version { get; set; } = "";
+            public string? checksum { get; set; }
         }
     }
 }
