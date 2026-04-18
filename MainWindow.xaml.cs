@@ -235,8 +235,27 @@ namespace VRTrainingLauncher
                 StatusText.Text = "Extracting...";
 
                 if (Directory.Exists(installDir))
-                    Directory.Delete(installDir, true);
-
+                {
+                    try
+                    {
+                        var running = System.Diagnostics.Process.GetProcessesByName("Safety Module");
+                        foreach (var p in running)
+                        {
+                            try{p.Kill(); p.WaitForExit(3000);}
+                            catch{}
+                        }
+                        Directory.Delete(installDir, true);
+                
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        foreach (string file in Directory.GetFiles(installDir, "*", SearchOption.AllDirectories))
+                        {
+                            try{File.Delete(file);}
+                            catch{}
+                        }                    
+                    }
+                }   
                 Directory.CreateDirectory(extactDir);
 
                 ZipFile.ExtractToDirectory(tempZip, extactDir, true);
