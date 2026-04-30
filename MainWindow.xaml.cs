@@ -34,7 +34,7 @@ namespace VRTrainingLauncher
         // Computed once moduleId is known (see SetModulePaths)
         private string installDir = "";   // e.g. C:\VRTraining\Modules\safety-101\
         private string installExe = "";   // resolved at runtime from manifest
-
+        private int scenarioIndex = 0;   // default to 0, can be overridden by launch args  
         private string  jwtToken      = "";
         private string  moduleId      = "";
         private static readonly HttpClient _httpClient = new HttpClient();
@@ -66,12 +66,14 @@ namespace VRTrainingLauncher
                         jwtToken     = query.Get("token")   ?? "";
                         sessionToken = query.Get("session");
                         scenarioId   = query.Get("scenario");
+                        scenarioIndex = query.Get("scenario_index") != null ? int.Parse(query.Get("scenario_index")!) : 0;
 
                         MessageBox.Show(
                             $"Module: {moduleId}\n" +
                             $"JWT: {(string.IsNullOrEmpty(jwtToken) ? "EMPTY" : "OK")}\n" +
                             $"Session: {sessionToken}\n" +
-                            $"Scenario: {scenarioId}"
+                            $"Scenario: {scenarioId}\n" +
+                            $"Scenario Index: {scenarioIndex}"
                         );
                     }
                     catch
@@ -469,7 +471,8 @@ namespace VRTrainingLauncher
                     $"--module_id={moduleId} "     +
                     $"--scenario_id={scenarioId} " +
                     $"--session={sessionToken} "   +
-                    $"--token={jwtToken}";
+                    $"--token={jwtToken}" +
+                    $"--scenario_index={scenarioIndex}";
 
                 Process.Start(new ProcessStartInfo
                 {
