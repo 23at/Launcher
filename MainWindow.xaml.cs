@@ -40,7 +40,7 @@ namespace VRTrainingLauncher
         private static readonly HttpClient _httpClient = new HttpClient();
         private static readonly HttpClient _cdnClient  = new HttpClient();
         private string? sessionToken   = null;
-        private string? scenarioId     = null;
+        private int? scenarioId     = null;
         private string  moduleVersion  = "";
         private string? moduleChecksum = null;
 
@@ -65,7 +65,8 @@ namespace VRTrainingLauncher
                         moduleId     = query.Get("module")  ?? "";
                         jwtToken     = query.Get("token")   ?? "";
                         sessionToken = query.Get("session");
-                        scenarioId   = query.Get("scenario");
+                        string? scenarioIdStr = query.Get("scenarioId");
+                        scenarioId = scenarioIdStr != null ? int.Parse(scenarioIdStr) : (int?)null;
                         scenarioIndex = query.Get("scenario_index") != null ? int.Parse(query.Get("scenario_index")!) : 0;
 
                         MessageBox.Show(
@@ -271,7 +272,7 @@ namespace VRTrainingLauncher
 
             if (launchResp == null ||
                 string.IsNullOrEmpty(launchResp.session_token) ||
-                string.IsNullOrEmpty(launchResp.scenario_id))
+                launchResp.scenario_id == null)
             {
                 throw new Exception("Launch failed: incomplete response from server.");
             }
@@ -464,7 +465,7 @@ namespace VRTrainingLauncher
 
             try
             {
-                if (string.IsNullOrEmpty(sessionToken) || string.IsNullOrEmpty(scenarioId))
+                if (string.IsNullOrEmpty(sessionToken) || scenarioId == null)
                     await LaunchModuleSession();
 
                 string arguments =
@@ -525,7 +526,7 @@ namespace VRTrainingLauncher
         public class LaunchResponse
         {
             public string  module_id     { get; set; } = "";
-            public string? scenario_id   { get; set; }
+            public int? scenario_id   { get; set; }
             public string? session_token { get; set; }
         }
 
