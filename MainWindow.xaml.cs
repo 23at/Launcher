@@ -1,4 +1,4 @@
-﻿using System;
+﻿﻿using System;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
@@ -14,16 +14,20 @@ namespace VRTrainingLauncher
 {
     public partial class MainWindow : Window
     {
-        private string installDir = @"C:\VRTraining\VRApp\";
-        private string installExe = @"C:\VRTraining\VRApp\Safety Module.exe";
-        private string extactDir = @"C:\VRTraining\";
-        private string jwtToken = "";
-        private string moduleId = "";
-        private static readonly HttpClient _httpClient = new HttpClient(); // backend (JWT)
-        private static readonly HttpClient _cdnClient = new HttpClient(); 
-        private string? sessionToken = null;
-        private string? scenarioId = null;
-        private string moduleVersion = "";
+        // ─── Base directory — each module lives in its own subfolder ──────────
+        private static readonly string baseInstallDir = @"C:\VRTraining\Modules\";
+
+        // Computed once moduleId is known (see SetModulePaths)
+        private string installDir  = "";   // e.g. C:\VRTraining\Modules\safety-101\
+        private string installExe  = "";   // e.g. C:\VRTraining\Modules\safety-101\Safety Module.exe
+
+        private string jwtToken  = "";
+        private string moduleId  = "";
+        private static readonly HttpClient _httpClient = new HttpClient();
+        private static readonly HttpClient _cdnClient  = new HttpClient();
+        private string? sessionToken  = null;
+        private string? scenarioId    = null;
+        private string  moduleVersion = "";
         private string? moduleChecksum = null;
 
 
@@ -41,7 +45,7 @@ namespace VRTrainingLauncher
                 {
                     try
                     {
-                        var uri = new Uri(input);
+                        var uri   = new Uri(input);
                         var query = HttpUtility.ParseQueryString(uri.Query);
 
                         moduleId     = query.Get("module")   ?? "";
@@ -85,7 +89,35 @@ namespace VRTrainingLauncher
                 return;
             }
 
+            // Derive all paths from moduleId now that we have it
+            SetModulePaths();
             CheckInstallation();
+        }
+
+        // ─── Per-module path setup ────────────────────────────────────────────
+
+        /// <summary>
+        /// Sets installDir and installExe based on the current moduleId.
+        /// Each module gets its own subfolder under baseInstallDir so modules
+        /// never overwrite each other.
+        /// </summary>
+        private void SetModulePaths()
+        {
+            // Sanitize moduleId so it's safe to use as a folder name
+            string safeId = SanitizeFolderName(moduleId);
+
+            installDir = Path.Combine(baseInstallDir, safeId) + Path.DirectorySeparatorChar;
+            installExe = Path.Combine(installDir, "Safety Module.exe");
+        }
+
+        /// <summary>
+        /// Strips characters that are invalid in Windows directory names.
+        /// </summary>
+        private static string SanitizeFolderName(string name)
+        {
+            foreach (char c in Path.GetInvalidFileNameChars())
+                name = name.Replace(c, '_');
+            return name.Trim().ToLowerInvariant();
         }
 
         // ─── Installation Status ──────────────────────────────────────────────
@@ -94,12 +126,12 @@ namespace VRTrainingLauncher
         {
             if (File.Exists(installExe))
             {
-                StatusText.Text = "Installed";
+                StatusText.Text        = "Installed";
                 LaunchButton.IsEnabled = true;
             }
             else
             {
-                StatusText.Text = "Not Installed";
+                StatusText.Text        = "Not Installed";
                 LaunchButton.IsEnabled = false;
             }
         }
@@ -107,11 +139,7 @@ namespace VRTrainingLauncher
         private string GetLocalModuleVersion()
         {
             string versionFile = Path.Combine(installDir, "version.txt");
-
-            if (File.Exists(versionFile))
-                return File.ReadAllText(versionFile).Trim();
-
-            return "";
+            return File.Exists(versionFile) ? File.ReadAllText(versionFile).Trim() : "";
         }
 
         // ─── API Calls ────────────────────────────────────────────────────────
@@ -134,7 +162,7 @@ namespace VRTrainingLauncher
                 throw new Exception("Module not found.");
 
             moduleVersion  = module.version;
-            moduleChecksum = module.cdn_checksum;  
+            moduleChecksum = module.cdn_checksum;
         }
 
         private async Task LaunchModuleSession()
@@ -169,12 +197,11 @@ namespace VRTrainingLauncher
 
         // ─── Download & Extract ───────────────────────────────────────────────
 
-       private async Task DownloadModule(string url, string version, string? expectedChecksum)
+        private async Task DownloadModule(string url, string version, string? expectedChecksum)
         {
             InstallButton.IsEnabled = false;
-            ProgressBar.Value = 0;
+            ProgressBar.Value       = 0;
 
-            // Clean URL (safety)
             url = url.Replace("\n", "").Replace("\r", "").Trim();
 
             string tempZip = Path.Combine(
@@ -184,96 +211,108 @@ namespace VRTrainingLauncher
 
             try
             {
-                Directory.CreateDirectory(installDir);
-
+                // ── Download ─────────────────────────────────────────────────
                 StatusText.Text = "Downloading...";
+
+                using (var request  = new HttpRequestMessage(HttpMethod.Get, url))
+                using (var response = await _cdnClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead))
                 {
-                    using var request = new HttpRequestMessage(HttpMethod.Get, url);
-
-                    using var response = await _cdnClient.SendAsync(
-                        request,
-                        HttpCompletionOption.ResponseHeadersRead
-                    );
-
                     if (!response.IsSuccessStatusCode)
                     {
-                        string errorContent = await response.Content.ReadAsStringAsync();
-                        throw new Exception($"Download failed: {response.StatusCode}\n{errorContent}");
+                        string err = await response.Content.ReadAsStringAsync();
+                        throw new Exception($"Download failed: {response.StatusCode}\n{err}");
                     }
 
-                    using Stream downloadStream = await response.Content.ReadAsStreamAsync();
-                    using FileStream fileStream = new FileStream(
-                        tempZip,
-                        FileMode.Create,
-                        FileAccess.Write,
-                        FileShare.None);
+                    using Stream     downloadStream = await response.Content.ReadAsStreamAsync();
+                    using FileStream fileStream     = new FileStream(
+                        tempZip, FileMode.Create, FileAccess.Write, FileShare.None);
 
                     byte[] buffer = new byte[81920];
-                    int read;
-
+                    int    read;
                     while ((read = await downloadStream.ReadAsync(buffer)) > 0)
-                    {
                         await fileStream.WriteAsync(buffer.AsMemory(0, read));
-                    }
                 }
 
-                StatusText.Text = "Verifying...";
-                //  Checksum
+                // ── Checksum ─────────────────────────────────────────────────
                 if (!string.IsNullOrEmpty(expectedChecksum))
                 {
                     StatusText.Text = "Verifying...";
 
-                    string actualChecksum = ComputeSha256(tempZip);
-
-                    if (!actualChecksum.Equals(expectedChecksum, StringComparison.OrdinalIgnoreCase))
-                    {
+                    string actual = ComputeSha256(tempZip);
+                    if (!actual.Equals(expectedChecksum, StringComparison.OrdinalIgnoreCase))
                         throw new Exception("Checksum mismatch!");
-                    }
                 }
 
-                // Extract
+                // ── Clear only THIS module's folder (others are untouched) ───
                 StatusText.Text = "Extracting...";
 
                 if (Directory.Exists(installDir))
                 {
+                    // Kill the process if it's running before we wipe its folder
+                    var running = Process.GetProcessesByName("Safety Module");
+                    foreach (var p in running)
+                    {
+                        try { p.Kill(); p.WaitForExit(3000); } catch { }
+                    }
+
                     try
                     {
-                        var running = System.Diagnostics.Process.GetProcessesByName("Safety Module");
-                        foreach (var p in running)
-                        {
-                            try{p.Kill(); p.WaitForExit(3000);}
-                            catch{}
-                        }
-                        Directory.Delete(installDir, true);
-                
+                        Directory.Delete(installDir, recursive: true);
                     }
                     catch (UnauthorizedAccessException)
                     {
+                        // Best-effort: delete individual files if folder delete fails
                         foreach (string file in Directory.GetFiles(installDir, "*", SearchOption.AllDirectories))
                         {
-                            try{File.Delete(file);}
-                            catch{}
-                        }                    
+                            try { File.Delete(file); } catch { }
+                        }
                     }
-                }   
-                Directory.CreateDirectory(extactDir);
+                }
 
-                ZipFile.ExtractToDirectory(tempZip, extactDir, true);
+                // Create this module's install dir fresh
+                Directory.CreateDirectory(installDir);
 
-                // Debug EXE detection
-                var allFiles = Directory.GetFiles(installDir, "*.exe", SearchOption.AllDirectories);
-                MessageBox.Show("Found exes:\n" + string.Join("\n", allFiles));
+                // Extract directly into installDir so the EXE lands at the expected path
+                // without any extra nesting from the ZIP's internal folder structure.
+                ZipFile.ExtractToDirectory(tempZip, installDir, overwriteFiles: true);
 
+                // ── EXE detection with AllDirectories fallback ───────────────
                 if (!File.Exists(installExe))
                 {
-                    throw new Exception(
-                        $"EXE not found at expected path:\n{installExe}\n\nCheck ZIP structure."
-                    );
+                    // ZIP may have an extra nested folder — search for the EXE
+                    var found = Directory.GetFiles(installDir, "Safety Module.exe", SearchOption.AllDirectories);
+
+                    if (found.Length == 0)
+                        throw new Exception(
+                            $"EXE not found after extraction.\nInstall dir: {installDir}\n" +
+                            "Check the ZIP folder structure."
+                        );
+
+                    // Promote: move everything from the nested folder up into installDir
+                    string nestedRoot = Path.GetDirectoryName(found[0])!;
+                    if (!nestedRoot.Equals(installDir.TrimEnd(Path.DirectorySeparatorChar),
+                                           StringComparison.OrdinalIgnoreCase))
+                    {
+                        foreach (string file in Directory.GetFiles(nestedRoot, "*", SearchOption.AllDirectories))
+                        {
+                            string relative = Path.GetRelativePath(nestedRoot, file);
+                            string dest     = Path.Combine(installDir, relative);
+                            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+                            File.Move(file, dest, overwrite: true);
+                        }
+
+                        // Clean up the now-empty nested folder
+                        try { Directory.Delete(nestedRoot, recursive: true); } catch { }
+                    }
                 }
+
+                // ── Verify EXE exists after any promotion ────────────────────
+                if (!File.Exists(installExe))
+                    throw new Exception($"EXE still not found at:\n{installExe}");
 
                 File.WriteAllText(Path.Combine(installDir, "version.txt"), version);
 
-                StatusText.Text = "Installed!";
+                StatusText.Text        = "Installed!";
                 LaunchButton.IsEnabled = true;
             }
             catch (Exception ex)
@@ -294,6 +333,7 @@ namespace VRTrainingLauncher
                 InstallButton.IsEnabled = true;
             }
         }
+
         // ─── Helpers ──────────────────────────────────────────────────────────
 
         private static string ComputeSha256(string filePath)
@@ -305,6 +345,7 @@ namespace VRTrainingLauncher
         }
 
         // ─── Button Handlers ──────────────────────────────────────────────────
+
         private async void InstallButton_Click(object sender, RoutedEventArgs e)
         {
             try
@@ -320,11 +361,7 @@ namespace VRTrainingLauncher
                     return;
                 }
 
-                await DownloadModule(
-                    signedData.signed_url,
-                    signedData.version,
-                    signedData.checksum
-                );
+                await DownloadModule(signedData.signed_url, signedData.version, signedData.checksum);
             }
             catch (Exception ex)
             {
@@ -342,17 +379,13 @@ namespace VRTrainingLauncher
 
             try
             {
-                // Only call the session API if we don't already have tokens
-                // (e.g. they weren't passed via the deep-link URL)
                 if (string.IsNullOrEmpty(sessionToken) || string.IsNullOrEmpty(scenarioId))
-                {
                     await LaunchModuleSession();
-                }
 
                 string arguments =
-                    $"--module_id={moduleId} "   +
+                    $"--module_id={moduleId} "    +
                     $"--scenario_id={scenarioId} " +
-                    $"--session={sessionToken} " +
+                    $"--session={sessionToken} "   +
                     $"--token={jwtToken}";
 
                 Process.Start(new ProcessStartInfo
@@ -375,9 +408,7 @@ namespace VRTrainingLauncher
                 new AuthenticationHeaderValue("Bearer", jwtToken);
 
             HttpResponseMessage response =
-                await _httpClient.GetAsync(
-                    $"http://localhost:8000/modules/{moduleId}/signed-url"
-                );
+                await _httpClient.GetAsync($"http://localhost:8000/modules/{moduleId}/signed-url");
 
             response.EnsureSuccessStatusCode();
 
@@ -398,26 +429,25 @@ namespace VRTrainingLauncher
 
         public class TrainingModule
         {
-            public string  module_id      { get; set; } = "";
-            public string  module_name    { get; set; } = "";
-            public string  version        { get; set; } = "";
-            public string  cdn_url        { get; set; } = "";
-            public string? cdn_checksum   { get; set; }
+            public string  module_id    { get; set; } = "";
+            public string  module_name  { get; set; } = "";
+            public string  version      { get; set; } = "";
+            public string  cdn_url      { get; set; } = "";
+            public string? cdn_checksum { get; set; }
         }
 
         public class LaunchResponse
         {
-            public string  module_id      { get; set; } = "";
-            public string? scenario_id    { get; set; }
-            public string? session_token  { get; set; }
+            public string  module_id     { get; set; } = "";
+            public string? scenario_id   { get; set; }
+            public string? session_token { get; set; }
         }
 
-
-       public class SignedUrlResponse
+        public class SignedUrlResponse
         {
-            public string signed_url { get; set; } = "";
-            public string version { get; set; } = "";
-            public string? checksum { get; set; }
+            public string  signed_url { get; set; } = "";
+            public string  version    { get; set; } = "";
+            public string? checksum   { get; set; }
         }
     }
 }
