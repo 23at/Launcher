@@ -1,7 +1,9 @@
 ﻿﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
@@ -17,17 +19,29 @@ namespace VRTrainingLauncher
         // ─── Base directory — each module lives in its own subfolder ──────────
         private static readonly string baseInstallDir = @"C:\VRTraining\Modules\";
 
-        // Computed once moduleId is known (see SetModulePaths)
-        private string installDir  = "";   // e.g. C:\VRTraining\Modules\safety-101\
-        private string installExe  = "";   // e.g. C:\VRTraining\Modules\safety-101\Safety Module.exe
+        // Known crash handler / helper EXE names to exclude when detecting the main EXE
+        private static readonly HashSet<string> ExcludedExeNames = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "CrashHandler.exe",
+            "UnityCrashHandler64.exe",
+            "UnityCrashHandler32.exe",
+            "CrashReporter.exe",
+            "crashpad_handler.exe",
+            "BugSplat.exe",
+            "Sentry.exe"
+        };
 
-        private string jwtToken  = "";
-        private string moduleId  = "";
+        // Computed once moduleId is known (see SetModulePaths)
+        private string installDir = "";   // e.g. C:\VRTraining\Modules\safety-101\
+        private string installExe = "";   // resolved at runtime from manifest
+
+        private string  jwtToken      = "";
+        private string  moduleId      = "";
         private static readonly HttpClient _httpClient = new HttpClient();
         private static readonly HttpClient _cdnClient  = new HttpClient();
-        private string? sessionToken  = null;
-        private string? scenarioId    = null;
-        private string  moduleVersion = "";
+        private string? sessionToken   = null;
+        private string? scenarioId     = null;
+        private string  moduleVersion  = "";
         private string? moduleChecksum = null;
 
 
@@ -48,8 +62,8 @@ namespace VRTrainingLauncher
                         var uri   = new Uri(input);
                         var query = HttpUtility.ParseQueryString(uri.Query);
 
-                        moduleId     = query.Get("module")   ?? "";
-                        jwtToken     = query.Get("token")    ?? "";
+                        moduleId     = query.Get("module")  ?? "";
+                        jwtToken     = query.Get("token")   ?? "";
                         sessionToken = query.Get("session");
                         scenarioId   = query.Get("scenario");
 
@@ -98,20 +112,17 @@ namespace VRTrainingLauncher
 
         /// <summary>
         /// Sets installDir and installExe based on the current moduleId.
-        /// Each module gets its own subfolder under baseInstallDir so modules
-        /// never overwrite each other.
+        /// installExe is read from the manifest written at install time.
         /// </summary>
         private void SetModulePaths()
         {
-            // Sanitize moduleId so it's safe to use as a folder name
             string safeId = SanitizeFolderName(moduleId);
-
-            installDir = Path.Combine(baseInstallDir, safeId) + Path.DirectorySeparatorChar;
-            installExe = Path.Combine(installDir, "Safety Module.exe");
+            installDir    = Path.Combine(baseInstallDir, safeId) + Path.DirectorySeparatorChar;
+            installExe    = GetInstalledExePath(); // empty if not yet installed
         }
 
         /// <summary>
-        /// Strips characters that are invalid in Windows directory names.
+        /// Strips characters invalid in Windows directory names and lowercases.
         /// </summary>
         private static string SanitizeFolderName(string name)
         {
@@ -124,7 +135,7 @@ namespace VRTrainingLauncher
 
         private void CheckInstallation()
         {
-            if (File.Exists(installExe))
+            if (!string.IsNullOrEmpty(installExe) && File.Exists(installExe))
             {
                 StatusText.Text        = "Installed";
                 LaunchButton.IsEnabled = true;
@@ -136,10 +147,82 @@ namespace VRTrainingLauncher
             }
         }
 
+        // ─── Manifest helpers ─────────────────────────────────────────────────
+
+        /// <summary>
+        /// Reads the EXE path saved during installation from manifest.txt.
+        /// Returns empty string if not installed.
+        /// </summary>
+        private string GetInstalledExePath()
+        {
+            string manifestPath = Path.Combine(installDir, "manifest.txt");
+            if (!File.Exists(manifestPath)) return "";
+
+            foreach (string line in File.ReadAllLines(manifestPath))
+            {
+                if (line.StartsWith("exe="))
+                {
+                    string relative = line.Substring(4).Trim();
+                    return Path.Combine(installDir, relative);
+                }
+            }
+            return "";
+        }
+
+        /// <summary>
+        /// Reads the version saved during installation from manifest.txt.
+        /// </summary>
         private string GetLocalModuleVersion()
         {
-            string versionFile = Path.Combine(installDir, "version.txt");
-            return File.Exists(versionFile) ? File.ReadAllText(versionFile).Trim() : "";
+            string manifestPath = Path.Combine(installDir, "manifest.txt");
+            if (!File.Exists(manifestPath)) return "";
+
+            foreach (string line in File.ReadAllLines(manifestPath))
+            {
+                if (line.StartsWith("version="))
+                    return line.Substring(8).Trim();
+            }
+            return "";
+        }
+
+        /// <summary>
+        /// Writes version and relative EXE path to manifest.txt after a successful install.
+        /// </summary>
+        private void WriteManifest(string version, string exeFullPath)
+        {
+            string relative = Path.GetRelativePath(installDir, exeFullPath);
+            File.WriteAllText(
+                Path.Combine(installDir, "manifest.txt"),
+                $"version={version}\nexe={relative}"
+            );
+        }
+
+        // ─── EXE Detection ────────────────────────────────────────────────────
+
+        /// <summary>
+        /// Finds the main application EXE after extraction by excluding known
+        /// crash handler / helper executables. If multiple candidates remain,
+        /// picks the largest file (main app is almost always bigger).
+        /// </summary>
+        private string? FindMainExe()
+        {
+            var candidates = Directory
+                .GetFiles(installDir, "*.exe", SearchOption.AllDirectories)
+                .Where(f => !ExcludedExeNames.Contains(Path.GetFileName(f)))
+                .ToList();
+
+            if (candidates.Count == 1)
+                return candidates[0];
+
+            if (candidates.Count == 0)
+                return null;
+
+            // More than one non-excluded EXE — pick the largest
+            return candidates
+                .Select(f => new FileInfo(f))
+                .OrderByDescending(f => f.Length)
+                .First()
+                .FullName;
         }
 
         // ─── API Calls ────────────────────────────────────────────────────────
@@ -248,11 +331,16 @@ namespace VRTrainingLauncher
 
                 if (Directory.Exists(installDir))
                 {
-                    // Kill the process if it's running before we wipe its folder
-                    var running = Process.GetProcessesByName("Safety Module");
-                    foreach (var p in running)
+                    // Kill the process if it's running before wiping its folder
+                    if (!string.IsNullOrEmpty(installExe))
                     {
-                        try { p.Kill(); p.WaitForExit(3000); } catch { }
+                        var running = Process.GetProcessesByName(
+                            Path.GetFileNameWithoutExtension(installExe)
+                        );
+                        foreach (var p in running)
+                        {
+                            try { p.Kill(); p.WaitForExit(3000); } catch { }
+                        }
                     }
 
                     try
@@ -261,7 +349,6 @@ namespace VRTrainingLauncher
                     }
                     catch (UnauthorizedAccessException)
                     {
-                        // Best-effort: delete individual files if folder delete fails
                         foreach (string file in Directory.GetFiles(installDir, "*", SearchOption.AllDirectories))
                         {
                             try { File.Delete(file); } catch { }
@@ -269,50 +356,47 @@ namespace VRTrainingLauncher
                     }
                 }
 
-                // Create this module's install dir fresh
                 Directory.CreateDirectory(installDir);
-
-                // Extract directly into installDir so the EXE lands at the expected path
-                // without any extra nesting from the ZIP's internal folder structure.
                 ZipFile.ExtractToDirectory(tempZip, installDir, overwriteFiles: true);
 
-                // ── EXE detection with AllDirectories fallback ───────────────
-                if (!File.Exists(installExe))
+                // ── Flatten single nested root folder if present ──────────────
+                var topLevelDirs  = Directory.GetDirectories(installDir);
+                var topLevelFiles = Directory.GetFiles(installDir);
+
+                if (topLevelFiles.Length == 0 && topLevelDirs.Length == 1)
                 {
-                    // ZIP may have an extra nested folder — search for the EXE
-                    var found = Directory.GetFiles(installDir, "Safety Module.exe", SearchOption.AllDirectories);
+                    string nestedRoot = topLevelDirs[0];
 
-                    if (found.Length == 0)
-                        throw new Exception(
-                            $"EXE not found after extraction.\nInstall dir: {installDir}\n" +
-                            "Check the ZIP folder structure."
-                        );
-
-                    // Promote: move everything from the nested folder up into installDir
-                    string nestedRoot = Path.GetDirectoryName(found[0])!;
-                    if (!nestedRoot.Equals(installDir.TrimEnd(Path.DirectorySeparatorChar),
-                                           StringComparison.OrdinalIgnoreCase))
+                    foreach (string file in Directory.GetFiles(nestedRoot, "*", SearchOption.AllDirectories))
                     {
-                        foreach (string file in Directory.GetFiles(nestedRoot, "*", SearchOption.AllDirectories))
-                        {
-                            string relative = Path.GetRelativePath(nestedRoot, file);
-                            string dest     = Path.Combine(installDir, relative);
-                            Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
-                            File.Move(file, dest, overwrite: true);
-                        }
-
-                        // Clean up the now-empty nested folder
-                        try { Directory.Delete(nestedRoot, recursive: true); } catch { }
+                        string relative = Path.GetRelativePath(nestedRoot, file);
+                        string dest     = Path.Combine(installDir, relative);
+                        Directory.CreateDirectory(Path.GetDirectoryName(dest)!);
+                        File.Move(file, dest, overwrite: true);
                     }
+
+                    try { Directory.Delete(nestedRoot, recursive: true); } catch { }
                 }
 
-                // ── Verify EXE exists after any promotion ────────────────────
-                if (!File.Exists(installExe))
-                    throw new Exception($"EXE still not found at:\n{installExe}");
+                // ── Find the main EXE (excluding crash handlers) ──────────────
+                string? mainExe = FindMainExe();
 
-                File.WriteAllText(Path.Combine(installDir, "version.txt"), version);
+                if (mainExe == null)
+                {
+                    var allExes = Directory.GetFiles(installDir, "*.exe", SearchOption.AllDirectories);
+                    throw new Exception(
+                        $"No main EXE found after extraction.\n" +
+                        $"Install dir: {installDir}\n\n" +
+                        $"All EXEs found:\n{string.Join("\n", allExes)}\n\n" +
+                        $"Add the crash handler name to ExcludedExeNames if it is listed above."
+                    );
+                }
 
-                StatusText.Text        = "Installed!";
+                // ── Save manifest & update runtime state ──────────────────────
+                WriteManifest(version, mainExe);
+                installExe = mainExe;
+
+                StatusText.Text        = $"Installed! ({Path.GetFileName(mainExe)})";
                 LaunchButton.IsEnabled = true;
             }
             catch (Exception ex)
@@ -350,11 +434,10 @@ namespace VRTrainingLauncher
         {
             try
             {
-                var signedData = await GetSignedDownloadUrl();
+                var signedData  = await GetSignedDownloadUrl();
+                string localVer = GetLocalModuleVersion();
 
-                string localVersion = GetLocalModuleVersion();
-
-                if (File.Exists(installExe) && localVersion == signedData.version)
+                if (File.Exists(installExe) && localVer == signedData.version)
                 {
                     StatusText.Text        = "Already up to date!";
                     LaunchButton.IsEnabled = true;
@@ -371,7 +454,7 @@ namespace VRTrainingLauncher
 
         private async void LaunchButton_Click(object sender, RoutedEventArgs e)
         {
-            if (!File.Exists(installExe))
+            if (string.IsNullOrEmpty(installExe) || !File.Exists(installExe))
             {
                 MessageBox.Show("VR training application is not installed.");
                 return;
@@ -383,7 +466,7 @@ namespace VRTrainingLauncher
                     await LaunchModuleSession();
 
                 string arguments =
-                    $"--module_id={moduleId} "    +
+                    $"--module_id={moduleId} "     +
                     $"--scenario_id={scenarioId} " +
                     $"--session={sessionToken} "   +
                     $"--token={jwtToken}";
