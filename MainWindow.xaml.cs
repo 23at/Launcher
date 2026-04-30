@@ -259,7 +259,7 @@ namespace VRTrainingLauncher
             content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
 
             HttpResponseMessage response =
-                await _httpClient.PostAsync("http://localhost:8000/api/launch-module", content);
+                await _httpClient.PostAsync("http://localhost:8000/launch-module", content);
 
             response.EnsureSuccessStatusCode();
 
