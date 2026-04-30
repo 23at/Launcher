@@ -472,7 +472,7 @@ namespace VRTrainingLauncher
                     $"--module_id={moduleId} "     +
                     $"--scenario_id={scenarioId} " +
                     $"--session={sessionToken} "   +
-                    $"--token={jwtToken}" +
+                    $"--token={jwtToken} " +
                     $"--scenario_index={scenarioIndex}";
 
                 Process.Start(new ProcessStartInfo
